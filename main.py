@@ -8,9 +8,9 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ACCESS_CODE = "20002000"
-
 AUTH_FILE = "authorized.txt"
 
+# ====== تحميل المستخدمين المخولين ======
 def load_authorized():
     if os.path.exists(AUTH_FILE):
         with open(AUTH_FILE, "r") as f:
@@ -18,15 +18,16 @@ def load_authorized():
     return set()
 
 def save_authorized(uid):
-    with open(AUTH_FILE, "a") as f:
-        f.write(f"{uid}\n")
+    if uid not in AUTHORIZED_USERS:
+        with open(AUTH_FILE, "a") as f:
+            f.write(f"{uid}\n")
+        AUTHORIZED_USERS.add(uid)
 
 AUTHORIZED_USERS = load_authorized()
-
 bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 state = {}
 
-# ====== يوزر ↔ قناة (ثابت) ======
+# ====== الحقوق ↔ القنوات ======
 rights_channels = [
     {"user": "mxhasd",   "channel": "https://t.me/+DaXIWRnl-PAzMWE5"},
     {"user": "m3_wt4_",  "channel": "https://t.me/+WV_zEH1or1plYmUy"},
@@ -42,7 +43,6 @@ def size_map(val):
     return {1:20, 2:30, 3:40, 4:50, 5:60}.get(val, 30)
 
 def get_color(idx):
-    # اللون string بدل tuple
     colors = [
         "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff",
         "#00ffff", "#ff8000", "#8000ff", "#0080ff", "#808080"
@@ -56,23 +56,14 @@ def process_video(file_path, rights_list, bio_text, rights_size, bio_size, outpu
     for i, r_text in enumerate(rights_list):
         r_color = get_color(i)
 
-        # حقوق الفيديو
         txt_clip = TextClip(
-            r_text,
-            fontsize=rights_size,
-            color=r_color,
-            method="caption",
-            size=(width, None)
+            r_text, fontsize=rights_size, color=r_color,
+            method="caption", size=(width, None)
         ).set_pos(lambda t: ((t*100) % (width+200) - 200, 50)).set_duration(clip.duration)
 
-        # نص البايو
         bio_clip = TextClip(
-            bio_text,
-            fontsize=bio_size,
-            color=r_color,
-            bg_color="black",
-            method="caption",
-            size=(width, None)
+            bio_text, fontsize=bio_size, color=r_color,
+            method="caption", size=(width, None)
         ).set_pos(("center", height - 100)).set_duration(clip.duration)
 
         final = CompositeVideoClip([clip, txt_clip, bio_clip])
@@ -94,7 +85,8 @@ async def start(event):
         await event.respond("🔐 أرسل رمز الدخول:")
         return
 
-    state[uid] = {"step":"await_video"}
+    if uid not in state:
+        state[uid] = {"step":"await_video"}
     await event.respond("📹 أرسل الفيديو:")
 
 # ========== FLOW ==========
@@ -108,17 +100,16 @@ async def flow(event):
 
     if s.get("step") == "auth":
         if txt != ACCESS_CODE:
-            await event.respond("❌ رمز خطأ")
+            await event.respond("❌ رمز خاطئ")
             return
-        AUTHORIZED_USERS.add(uid)
         save_authorized(uid)
-        state[uid] = {"step":"await_video"}
+        state[uid]["step"] = "await_video"
         await event.respond("✅ تم التحقق\n📹 أرسل الفيديو:")
         return
 
     if s.get("step") == "await_video" and event.media:
         s["file_path"] = await event.download_media()
-        s["rights_list"] = [rc["user"] for rc in rights_channels]
+        s.setdefault("rights_list", [rc["user"] for rc in rights_channels])
         s["step"] = "choose_rights_size"
         await event.respond(
             "📏 اختر حجم الحقوق:",
@@ -157,28 +148,12 @@ async def cb(event):
 
     if data.startswith("bio_"):
         s["bio_size"] = int(data.split("_")[1])
-        s["step"] = "choose_bio_text"
-        await event.edit(
-            "✏️ اختر نص البايو:",
-            buttons=[
-                [Button.inline("✅ افتراضي", b"bio_default"),
-                 Button.inline("✍️ يدوي", b"bio_manual")]
-            ]
-        )
-        return
-
-    if data == "bio_default":
-        s["bio_text"] = "البايو حصريات 😼🇸🇦"
-        await start_processing(event, s)
-        return
-
-    if data == "bio_manual":
         s["step"] = "enter_bio_text"
-        await event.edit("✏️ أرسل نص البايو:")
+        await event.edit("✏️ أرسل نص البايو (يمكن استخدام إيموجي):")
         return
 
     if data == "new_video":
-        state[uid] = {"step":"await_video"}
+        s["step"] = "await_video"
         await event.edit("📹 أرسل فيديو جديد:")
 
 # ========== PROCESS ==========
@@ -193,7 +168,7 @@ async def start_processing(event, s):
         s["rights_list"],
         s["bio_text"],
         size_map(s["rights_size"]),
-        size_map(s["bio_size"]),
+        30,  # حجم البايو ثابت لو تريد تغييره اجعل ديناميكي
         output_folder
     )
 
