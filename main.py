@@ -42,9 +42,10 @@ def size_map(val):
     return {1:20, 2:30, 3:40, 4:50, 5:60}.get(val, 30)
 
 def get_color(idx):
+    # اللون string بدل tuple
     colors = [
-        (255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),
-        (0,255,255),(255,128,0),(128,0,255),(0,128,255),(128,128,128)
+        "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff",
+        "#00ffff", "#ff8000", "#8000ff", "#0080ff", "#808080"
     ]
     return colors[idx % len(colors)]
 
@@ -52,21 +53,27 @@ def process_video(file_path, rights_list, bio_text, rights_size, bio_size, outpu
     clip = VideoFileClip(file_path)
     width, height = clip.size
 
-    for i in range(len(rights_list)):
-        r_text = rights_list[i]
+    for i, r_text in enumerate(rights_list):
         r_color = get_color(i)
 
-        txt_clip = TextClip(r_text, fontsize=rights_size, color=r_color)
-        txt_clip = txt_clip.set_pos(
-            lambda t: ((t*100) % (width+txt_clip.w) - txt_clip.w, 50)
-        ).set_duration(clip.duration)
+        # حقوق الفيديو
+        txt_clip = TextClip(
+            r_text,
+            fontsize=rights_size,
+            color=r_color,
+            method="caption",
+            size=(width, None)
+        ).set_pos(lambda t: ((t*100) % (width+200) - 200, 50)).set_duration(clip.duration)
 
+        # نص البايو
         bio_clip = TextClip(
-            bio_text, fontsize=bio_size, color=r_color, bg_color="black"
-        )
-        bio_clip = bio_clip.set_pos(
-            ("center", height - bio_clip.h - 50)
-        ).set_duration(clip.duration)
+            bio_text,
+            fontsize=bio_size,
+            color=r_color,
+            bg_color="black",
+            method="caption",
+            size=(width, None)
+        ).set_pos(("center", height - 100)).set_duration(clip.duration)
 
         final = CompositeVideoClip([clip, txt_clip, bio_clip])
         final = final.fx(vfx.colorx, 1 + i*0.02)
@@ -148,16 +155,6 @@ async def cb(event):
         )
         return
 
-    if data == "bio_default":
-        s["bio_text"] = "البايو حصريات 😼🇸🇦"
-        await start_processing(event, s)
-        return
-
-    if data == "bio_manual":
-        s["step"] = "enter_bio_text"
-        await event.edit("✏️ أرسل نص البايو:")
-        return
-
     if data.startswith("bio_"):
         s["bio_size"] = int(data.split("_")[1])
         s["step"] = "choose_bio_text"
@@ -168,6 +165,16 @@ async def cb(event):
                  Button.inline("✍️ يدوي", b"bio_manual")]
             ]
         )
+        return
+
+    if data == "bio_default":
+        s["bio_text"] = "البايو حصريات 😼🇸🇦"
+        await start_processing(event, s)
+        return
+
+    if data == "bio_manual":
+        s["step"] = "enter_bio_text"
+        await event.edit("✏️ أرسل نص البايو:")
         return
 
     if data == "new_video":
