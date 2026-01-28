@@ -1,149 +1,189 @@
-import asyncio
-import os
-from telethon import TelegramClient, events, Button
+import os, json, random, asyncio, time
+from telethon import TelegramClient
 from telethon.sessions import StringSession
-from moviepy.editor import VideoFileClip, vfx, TextClip, CompositeVideoClip
+from telethon.errors import SessionPasswordNeededError
+from instagrapi import Client
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# ===== CONFIG =====
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-ACCESS_CODE = "20002000"
+# الإعدادات الأساسية من ريلواي
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-state = {}
+# الهاشتاقات الثابتة للتمويه (تمت إعادتها بالكامل كما طلبت)
+GULF_TAGS = ["#الرياض", "#الطائف", "#جدة", "#القصيم", "#ورعان", "#حلوين", "#داعمين_المواهب", "#السعودية", "#الكويت", "#الإمارات"]
 
-# ===== القنوات واليوزرات =====
-rights_channels = [
-    {"user":"mxhasd", "channel":"https://t.me/+DaXIWRnl-PAzMWE5"},
-    {"user":"m3_wt4_", "channel":"https://t.me/+WV_zEH1or1plYmUy"},
-    {"user":"271f_", "channel":"https://t.me/+Hs6PyBFPc7kzNzI5"},
-    {"user":"m3_wt33", "channel":"https://t.me/+IOdlFnTe275lZWNi"},
-    {"user":"m3_wt2", "channel":"https://t.me/+qqC1xo6x44ZmMWZi"},
-    {"user":"m3_wt55", "channel":"https://t.me/+cUDaK0ag8lI3OTYy"},
-    {"user":"m3_wt6", "channel":"https://t.me/+tZN6h2m2cUs2MjIx"},
-]
+# مراحل الحوار (States)
+TG_PHONE, TG_CODE, TG_PASS, IG_USER, IG_PASS, IG_2FA, RUN_URL, RUN_COMMENT = range(8)
 
-# ===== HELPERS =====
-def size_map(val):
-    mapping = {1:20, 2:30, 3:40, 4:50, 5:60}
-    return mapping.get(val, 30)
+# --- محرك العمليات (انستقرام) ---
+def run_insta_tasks(url, my_comment):
+    all_sessions = {k: v for k, v in os.environ.items() if k.startswith('ACC')}
+    if not all_sessions:
+        return "⚠️ لم يتم العثور على حسابات (ACC) في ريلواي."
 
-def get_color(idx):
-    colors = [(255,0,0),(0,255,0),(0,0,255),(255,255,0),(255,0,255),
-              (0,255,255),(255,128,0),(128,0,255),(0,128,255),(128,128,128)]
-    return colors[idx % len(colors)]
+    active_accounts = []
+    results = []
 
-def process_video(file_path, rights_list, bio_text, rights_size, bio_size, output_folder):
-    clip = VideoFileClip(file_path)
-    width, height = clip.size
+    # الخطوة 1: فحص الحسابات قبل التنفيذ
+    for name, s_json in all_sessions.items():
+        try:
+            cl = Client()
+            cl.set_settings(json.loads(s_json))
+            active_accounts.append((name, cl))
+        except:
+            results.append(f"❌ {name}: الجلسة منتهية")
 
-    for i in range(len(rights_list)):
-        r_text = rights_list[i % len(rights_list)]
-        r_color = get_color(i)
-        r_size = rights_size
-        b_size = bio_size
+    if not active_accounts:
+        return "❌ كل الحسابات المضافة متعطلة حالياً."
 
-        # الحقوق المتحركة أعلى الفيديو
-        txt_clip = TextClip(r_text, fontsize=r_size, color=r_color)
-        txt_clip = txt_clip.set_pos(lambda t: ((t*100) % (width+txt_clip.w) - txt_clip.w, 50)).set_duration(clip.duration)
+    # الخطوة 2: التنفيذ على الحسابات الشغالة
+    status_msg = f"🔍 فحص: {len(active_accounts)} حساب جاهز.\n"
+    
+    for name, cl in active_accounts:
+        try:
+            media_id = cl.media_id(cl.media_pk_from_url(url))
+            cl.media_like(media_id)  # لايك
+            cl.media_save(media_id)  # حفظ
+            
+            final_text = f"{my_comment} {random.choice(GULF_TAGS)}"
+            cl.media_comment(media_id, final_text) # تعليقك + هاشتاق عشوائي
+            
+            results.append(f"✅ {name}: تم التفاعل")
+            time.sleep(random.randint(20, 40)) # فاصل أمان
+        except Exception as e:
+            results.append(f"⚠️ {name}: خطأ ({str(e)[:15]})")
 
-        # نص أسفل الفيديو
-        bio_clip = TextClip(bio_text, fontsize=b_size, color=r_color, bg_color='black')
-        bio_clip = bio_clip.set_pos(("center", height - bio_clip.h - 50)).set_duration(clip.duration)
+    return status_msg + "\n".join(results)
 
-        final = CompositeVideoClip([clip, txt_clip, bio_clip])
-        final = final.fx(vfx.colorx, 1 + i*0.02)
+# --- واجهة البوت ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [[InlineKeyboardButton("🔹 سيشن تليجرام", callback_data='t'), 
+            InlineKeyboardButton("🔸 سيشن انستا", callback_data='i')],
+          [InlineKeyboardButton("🚀 تشغيل المهام", callback_data='r')]]
+    await update.message.reply_text("مرحباً بك في لوحة تحكم ريلواي 24 ساعة.\nاختر القسم المطلوب:", reply_markup=InlineKeyboardMarkup(kb))
 
-        os.makedirs(output_folder, exist_ok=True)
-        out_path = os.path.join(output_folder, f"copy_{i+1}.mp4")
-        final.write_videofile(out_path, codec='libx264', audio_codec='aac', threads=2)
+# --- قسم تليجرام ---
+async def tg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("📱 أرسل رقم التليجرام (+964...):")
+    return TG_PHONE
 
-    return output_folder
+async def tg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['p'] = update.message.text
+    client = TelegramClient(StringSession(), API_ID, API_HASH)
+    await client.connect()
+    context.user_data['cl'] = client
+    try:
+        sent = await client.send_code_request(context.user_data['p'])
+        context.user_data['h'] = sent.phone_code_hash
+        await update.message.reply_text("🔢 أرسل الكود:")
+        return TG_CODE
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ: {e}")
+        return ConversationHandler.END
 
-# ===== START =====
-@bot.on(events.NewMessage(pattern="/start"))
-async def start(event):
-    uid = event.sender_id
-    state[uid] = {"step":"auth"}
-    await event.respond("🔐 اهلا! أرسل رمز الدخول للوصول للبوت:")
+async def tg_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    client = context.user_data['cl']
+    try:
+        await client.sign_in(context.user_data['p'], update.message.text, phone_code_hash=context.user_data['h'])
+        await update.message.reply_text(f"✅ سيشن تليجرام (انسخه):\n\n`{client.session.save()}`", parse_mode='Markdown')
+        await client.disconnect()
+        return ConversationHandler.END
+    except SessionPasswordNeededError:
+        await update.message.reply_text("🔐 الحساب محمي، أرسل كلمة السر (Cloud Password):")
+        return TG_PASS
 
-# ===== FLOW =====
-@bot.on(events.NewMessage)
-async def flow(event):
-    uid = event.sender_id
-    txt = (event.text or "").strip()
-    if uid not in state:
+async def tg_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    client = context.user_data['cl']
+    try:
+        await client.sign_in(password=update.message.text)
+        await update.message.reply_text(f"✅ سيشن تليجرام:\n\n`{client.session.save()}`", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ في كلمة السر: {e}")
+    await client.disconnect()
+    return ConversationHandler.END
+
+# --- قسم انستا ---
+async def ig_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("👤 أرسل يوزر انستقرام:")
+    return IG_USER
+
+async def ig_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['ig_u'] = update.message.text
+    await update.message.reply_text("🔑 أرسل كلمة السر:")
+    return IG_PASS
+
+async def ig_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['ig_p'] = update.message.text
+    await update.message.reply_text("🛡️ أرسل كود الأمان/2FA أو 'تخطى':")
+    return IG_2FA
+
+async def ig_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cl = Client()
+    code = update.message.text
+    try:
+        if code == "تخطى": 
+            cl.login(context.user_data['ig_u'], context.user_data['ig_p'])
+        else: 
+            cl.login(context.user_data['ig_u'], context.user_data['ig_p'], verification_code=code)
+        await update.message.reply_text(f"✅ سيشن انستا (انسخه):\n\n`{json.dumps(cl.get_settings())}`", parse_mode='Markdown')
+    except Exception as e: 
+        await update.message.reply_text(f"❌ فشل: {e}")
+    return ConversationHandler.END
+
+# --- قسم المهام ---
+async def run_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("🔗 أرسل رابط المنشور:")
+    return RUN_URL
+
+async def get_run_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['url'] = update.message.text
+    await update.message.reply_text("✍️ أرسل نص التعليق الذي تريده:")
+    return RUN_COMMENT
+
+async def get_run_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ جاري فحص الحسابات والبدء...")
+    # تشغيل في Thread منفصل لعدم تجميد البوت
+    report = await asyncio.to_thread(run_insta_tasks, context.user_data['url'], update.message.text)
+    await msg.edit_text(f"📊 تقرير العمليات:\n{report}")
+    return ConversationHandler.END
+
+# --- التشغيل ---
+def main():
+    if not BOT_TOKEN:
+        print("Error: BOT_TOKEN is missing!")
         return
-    s = state[uid]
 
-    # التحقق من رمز الدخول
-    if s.get("step") == "auth":
-        if txt != ACCESS_CODE:
-            await event.respond("❌ رمز خاطئ")
-            return
-        s["step"] = "await_video"
-        await event.respond("✅ تم التحقق\n📹 أرسل الفيديو:")
-
-    # استلام الفيديو
-    elif s.get("step") == "await_video" and event.media:
-        s["file_path"] = await event.download_media()
-        s.setdefault("rights_list", [rc["user"] for rc in rights_channels])
-        s["step"] = "choose_rights_size"
-        await event.respond(
-            "📏 اختر حجم الحقوق:",
-            buttons=[
-                [Button.inline("1️⃣", b"rights_1"), Button.inline("2️⃣", b"rights_2"), Button.inline("3️⃣", b"rights_3")],
-                [Button.inline("4️⃣", b"rights_4"), Button.inline("5️⃣", b"rights_5")]
-            ]
-        )
-
-    # إدخال نص البايو
-    elif s.get("step") == "enter_bio_text":
-        if txt:
-            s["bio_text"] = txt  # حفظ النص فوراً لكل النسخ
-            await start_processing(event, s)
-        else:
-            await event.respond("⚠️ يرجى كتابة نص صحيح للبـايو")
-
-# ===== CALLBACK =====
-@bot.on(events.CallbackQuery)
-async def cb(event):
-    await event.answer()
-    uid = event.sender_id
-    s = state.get(uid)
-    if not s:
-        return
-    data = event.data.decode()
-
-    if data.startswith("rights_"):
-        s["rights_size"] = int(data.split("_")[1])
-        s["step"] = "enter_bio_text"
-        await event.edit("✏️ أرسل نص البايو الذي تريد إضافته أسفل كل النسخ (يمكن استخدام إيموجي):")
-
-# ===== معالجة الفيديو =====
-async def start_processing(event, s):
-    # استخدم رسالة جديدة للتقدم لتجنب MessageIdInvalidError
-    status_msg = await event.respond("🚀 جاري المعالجة...")
-    s["status"] = status_msg
-    output_folder = f"output_{event.sender_id}"
-    await asyncio.get_event_loop().run_in_executor(
-        None,
-        process_video,
-        s["file_path"],
-        s["rights_list"],
-        s["bio_text"],
-        size_map(s["rights_size"]),
-        30,  # حجم البايو ثابت افتراضياً يمكن تغييره
-        output_folder
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(tg_start, pattern='t'), 
+            CallbackQueryHandler(ig_start, pattern='i'),
+            CallbackQueryHandler(run_start, pattern='r')
+        ],
+        states={
+            TG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, tg_phone)],
+            TG_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, tg_code)],
+            TG_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, tg_pass)],
+            IG_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, ig_user)],
+            IG_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ig_pass)],
+            IG_2FA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ig_2fa)],
+            RUN_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_run_url)],
+            RUN_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_run_comment)]
+        },
+        fallbacks=[CommandHandler('start', start)]
     )
+    
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(conv)
+    
+    print("🚀 البوت يعمل الآن...")
+    app.run_polling()
 
-    # إرسال النسخ للقنوات
-    for i, rc in enumerate(rights_channels):
-        file_path = os.path.join(output_folder, f"copy_{i+1}.mp4")
-        await bot.send_file(rc["channel"], file_path, caption=f"نسخة {i+1} | {rc['user']}")
-
-    await status_msg.edit("✅ تم إنشاء وإرسال النسخ بنجاح!\n📹 أرسل فيديو جديد إذا أردت:")
-    s["step"] = "await_video"  # إعادة الخطوة للفيديو جديد
-
-bot.run_until_disconnected()
+if __name__ == '__main__':
+    main()
