@@ -1,3 +1,2 @@
-telethon
-instagrapi
-python-telegram-bot
+pyTelegramBotAPI
+requests
