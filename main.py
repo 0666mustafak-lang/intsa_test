@@ -5,114 +5,66 @@ import random
 import threading
 import telebot
 import smtplib
-import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from instagrapi import Client
 
-# --- الإعدادات الأساسية من ريلواي/رندر ---
+# --- الإعدادات ---
 TOKEN = os.getenv("BOT_TOKEN")
 SECRET_PASSWORD = "20002000"
 bot = telebot.TeleBot(TOKEN)
 
-# --- البيانات الحية ---
-active_tasks = {}  # { 'username': {'email': '...', 'count': 0, 'status': 'Running'} }
+active_tasks = {} 
 dashboard_msg_id = None
 lock = threading.Lock()
 
-# --- قوائم الصيغ (تم تحسينها لتجنب السبام) ---
-SUBJECTS = [
-    "Urgent: Account @user Deactivated by Mistake", 
-    "Appeal for @user Suspension - Review Needed", 
-    "My Instagram Profile @user is Disabled",
-    "Reactivate my account @user - Case ID #{id}"
-]
-STARTS = ["Hello Support,", "Dear Meta Team,", "Greetings Review Board,"]
-MIDDLES = [
-    "my account @user (Email: {email}) was disabled. I believe this is a mistake as I follow all community guidelines.",
-    "the profile @user linked to {email} was suspended without prior notice. Please review it manually."
-]
-ENDS = ["I need my account for my business. Please help.", "Best regards.", "Thank you for your assistance."]
+# --- صيغ الطعون ---
+SUBJECTS = ["Appeal for @user", "Account Deactivation @user", "Support Request: @user", "Review @user Case"]
+STARTS = ["Hello,", "Hi Instagram Team,", "Support,"]
+MIDDLES = ["My account @user linked to {email} was disabled in error.", "Please review the suspension of @user ({email})."]
+ENDS = ["Please reactivate it.", "Thanks.", "I follow the rules."]
 
-# --- الدوال المساعدة ---
 def get_senders():
-    """جلب حسابات الجيميل من المتغيرات البيئية"""
-    data = os.getenv("GMAIL_ACCOUNTS")
-    try: return json.loads(data)
+    try: return json.loads(os.getenv("GMAIL_ACCOUNTS"))
     except: return []
 
-def check_insta_status(username):
-    """فحص دقيق للحساب: هل عاد للعمل فعلياً؟"""
-    cl = Client()
-    # نضع وقت انتظار قصير للفحص
-    cl.request_timeout = 5
-    try:
-        # إذا نجح في جلب الـ ID، يعني الحساب شغال
-        user_id = cl.user_id_from_username(username)
-        return True if user_id else False
-    except:
-        return False
-
 def update_dashboard(chat_id):
-    """تحديث لوحة التحكم المثبتة"""
     global dashboard_msg_id
     with lock:
-        text = "🚀 *لوحة تحكم فك الحظر الذكية*\n"
+        text = "🚀 *بدأ الإرسال المستمر للطعون*\n"
         text += "━━━━━━━━━━━━━━━\n"
         if not active_tasks:
-            text += "📭 لا توجد عمليات إرسال حالياً.\n"
+            text += "📭 لا توجد مهام حالياً.\n"
         else:
             for user, data in active_tasks.items():
-                icon = "🟢" if data['status'] == 'Running' else "✅"
-                text += f"{icon} *@{user}*\n"
-                text += f"   - طلبات الإرسال: {data['count']}\n"
-                text += f"   - الحالة: {'جاري الطعن..' if data['status'] == 'Running' else 'تم الفك بنجاح!'}\n"
+                text += f"🔥 *@{user}*\n"
+                text += f"📩 تم إرسال: {data['count']} طعن\n"
                 text += "━━━━━━━━━━━━━━━\n"
-        text += f"\n🔄 آخر تحديث: {time.strftime('%H:%M:%S')}"
-
+        text += f"\n⚠️ أرسل /stop فوراً عند فك الحساب يدوياً.\n"
         try:
             if dashboard_msg_id is None:
                 msg = bot.send_message(chat_id, text, parse_mode="Markdown")
                 dashboard_msg_id = msg.message_id
-                bot.pin_chat_message(chat_id, dashboard_msg_id)
             else:
                 bot.edit_message_text(text, chat_id, dashboard_msg_id, parse_mode="Markdown")
         except: pass
 
-# --- محرك الإرسال (Spam Engine) ---
 def spam_engine(chat_id, user, email):
-    active_tasks[user] = {'email': email, 'count': 0, 'status': 'Running'}
+    active_tasks[user] = {'count': 0, 'status': 'Running'}
     update_dashboard(chat_id)
-    
-    meta_emails = ["support@instagram.com", "disabled@instagram.com", "appeals@instagram.com"]
+    targets = ["support@instagram.com", "disabled@instagram.com", "appeals@instagram.com"]
 
-    while active_tasks.get(user) and active_tasks[user]['status'] == 'Running':
-        # 1. الفحص الحقيقي قبل الإرسال
-        if check_insta_status(user):
-            active_tasks[user]['status'] = 'Done'
-            update_dashboard(chat_id)
-            bot.send_message(chat_id, f"🎉 مبروك! الحساب @{user} عاد للعمل وتم إيقاف الإرسال.")
-            break
-
-        # 2. جلب الحسابات
+    while active_tasks.get(user):
         senders = get_senders()
-        if not senders:
-            bot.send_message(chat_id, "⚠️ خطأ: لم يتم إضافة حسابات جيميل في ريلواي!")
-            break
-
-        # 3. دورة الإرسال المكثف
         for acc in senders:
-            for target in meta_emails:
-                if not active_tasks.get(user) or active_tasks[user]['status'] != 'Running': return
-                
+            for target in targets:
+                if not active_tasks.get(user): return
                 try:
-                    # توليد طعن فريد لكل رسالة لتجنب الفلترة
-                    sub = random.choice(SUBJECTS).replace("@user", user).replace("{id}", str(random.randint(1000, 9999)))
-                    body = f"{random.choice(STARTS)}\n\n{random.choice(MIDDLES).format(email=email).replace('@user', user)}\n\n{random.choice(ENDS)}"
+                    # حل مشكلة Network unreachable باستخدام منفذ 465 SSL
+                    server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=10)
+                    server.login(acc['email'], acc['pass'])
                     
-                    server = smtplib.SMTP('smtp.gmail.com', 587)
-                    server.starttls()
-                    server.login(acc['email'], acc['pass']) # كلمة سر التطبيقات
+                    sub = random.choice(SUBJECTS).replace("@user", user)
+                    body = f"{random.choice(STARTS)}\n{random.choice(MIDDLES).format(email=email).replace('@user', user)}\n{random.choice(ENDS)}"
                     
                     msg = MIMEMultipart()
                     msg['From'], msg['To'], msg['Subject'] = acc['email'], target, sub
@@ -123,37 +75,33 @@ def spam_engine(chat_id, user, email):
                     
                     active_tasks[user]['count'] += 1
                     update_dashboard(chat_id)
-                    time.sleep(15) # فاصل أمان لتجنب حظر الجيميل
+                    time.sleep(10) # فاصل بسيط لضمان عدم حظر الإيميل
                 except Exception as e:
-                    print(f"Error sending from {acc['email']}: {e}")
+                    print(f"Error: {e}")
+        time.sleep(60) # استراحة بين الجولات
 
-        time.sleep(600) # انتظار 10 دقائق بين كل جولة إرسال كاملة
-
-# --- أوامر البوت ---
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "🔐 البوت محمي. أدخل الرمز السري للبدء:")
+    bot.reply_to(message, "🔐 أدخل الرمز السري:")
 
 @bot.message_handler(func=lambda m: m.text == SECRET_PASSWORD)
 def auth(message):
-    bot.send_message(message.chat.id, "✅ تم التحقق. أرسل *يوزر* الحساب المتبند (بدون @):")
-    bot.register_next_step_handler(message, get_user_data)
+    bot.send_message(message.chat.id, "✅ أرسل يوزر الحساب:")
+    bot.register_next_step_handler(message, get_user)
 
-def get_user_data(message):
-    user = message.text.strip()
-    bot.send_message(message.chat.id, f"تم حفظ @{user}. الآن أرسل *الإيميل المربوط بالحساب* لإرسال الطعون باسمه:")
-    bot.register_next_step_handler(message, lambda m: start_process(m, user))
+def get_user(message):
+    user = message.text.strip().replace("@", "")
+    bot.send_message(message.chat.id, "✅ أرسل الإيميل المربوط:")
+    bot.register_next_step_handler(message, lambda m: start_t(m, user))
 
-def start_process(message, user):
+def start_t(message, user):
     email = message.text.strip()
     threading.Thread(target=spam_engine, args=(message.chat.id, user, email), daemon=True).start()
-    bot.send_message(message.chat.id, "🚀 بدأ الإرسال. تابع التحديثات في الرسالة المثبتة.")
+    bot.send_message(message.chat.id, "🚀 انطلق الإرسال! راقب حسابك يدوياً.")
 
 @bot.message_handler(commands=['stop'])
-def stop_all(message):
-    global active_tasks, dashboard_msg_id
+def stop(message):
     active_tasks.clear()
-    dashboard_msg_id = None
-    bot.reply_to(message, "🛑 تم إيقاف جميع العمليات.")
+    bot.reply_to(message, "🛑 توقف الإرسال.")
 
 bot.infinity_polling()
